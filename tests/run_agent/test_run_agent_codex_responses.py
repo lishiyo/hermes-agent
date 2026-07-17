@@ -1644,6 +1644,75 @@ def test_chat_messages_to_responses_input_uses_call_id_for_function_call(monkeyp
     assert function_output["call_id"] == "call_abc123"
 
 
+def test_chat_messages_to_responses_input_normalizes_long_call_id_pair(monkeypatch):
+    _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    long_call_id = "tool_mcp_google_workspace_google_gmail_search_all_" + ("x" * 24)
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": long_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "mcp_google_workspace_google_gmail_search_all",
+                        "arguments": "{}",
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": long_call_id, "content": '{"ok":true}'},
+    ]
+
+    first = _chat_messages_to_responses_input(messages)
+    second = _chat_messages_to_responses_input(messages)
+    first_call = next(item for item in first if item.get("type") == "function_call")
+    first_output = next(item for item in first if item.get("type") == "function_call_output")
+    second_call = next(item for item in second if item.get("type") == "function_call")
+
+    assert first_call["call_id"] == first_output["call_id"]
+    assert first_call["call_id"] == second_call["call_id"]
+    assert first_call["call_id"] != long_call_id
+    assert len(first_call["call_id"]) <= 64
+
+
+def test_chat_messages_to_responses_input_distinguishes_long_call_ids(monkeypatch):
+    _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    long_call_ids = ["provider_tool_call_" + (suffix * 70) for suffix in ("a", "b")]
+    messages = []
+    for index, call_id in enumerate(long_call_ids):
+        messages.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": f"tool_{index}", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": call_id, "content": str(index)},
+            ]
+        )
+
+    items = _chat_messages_to_responses_input(messages)
+    call_ids = [
+        item["call_id"] for item in items if item.get("type") == "function_call"
+    ]
+
+    assert len(call_ids) == 2
+    assert call_ids[0] != call_ids[1]
+    assert all(len(call_id) <= 64 for call_id in call_ids)
+
+
 def test_chat_messages_to_responses_input_accepts_call_pipe_fc_ids(monkeypatch):
     agent = _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _chat_messages_to_responses_input
@@ -1698,6 +1767,82 @@ def test_preflight_codex_api_kwargs_strips_optional_function_call_id(monkeypatch
     fn_call = next(item for item in preflight["input"] if item.get("type") == "function_call")
     assert fn_call["call_id"] == "call_good"
     assert "id" not in fn_call
+
+
+def test_preflight_codex_api_kwargs_normalizes_long_call_id_pair(monkeypatch):
+    _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+
+    long_call_id = "tool_mcp_google_workspace_google_drive_search_" + ("y" * 24)
+    preflight = _preflight_codex_api_kwargs(
+        {
+            "model": "gpt-5-codex",
+            "instructions": "You are Hermes.",
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": long_call_id,
+                    "name": "mcp_google_workspace_google_drive_search",
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": long_call_id,
+                    "output": '{"ok":true}',
+                },
+            ],
+            "tools": [],
+            "store": False,
+        }
+    )
+
+    function_call = next(
+        item for item in preflight["input"] if item.get("type") == "function_call"
+    )
+    function_output = next(
+        item
+        for item in preflight["input"]
+        if item.get("type") == "function_call_output"
+    )
+
+    assert function_call["call_id"] == function_output["call_id"]
+    assert function_call["call_id"] != long_call_id
+    assert len(function_call["call_id"]) <= 64
+
+
+def test_preflight_codex_api_kwargs_preserves_short_call_id_pair(monkeypatch):
+    _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+
+    preflight = _preflight_codex_api_kwargs(
+        {
+            "model": "gpt-5-codex",
+            "instructions": "You are Hermes.",
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_short123",
+                    "name": "terminal",
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_short123",
+                    "output": "ok",
+                },
+            ],
+            "tools": [],
+            "store": False,
+        }
+    )
+
+    call_ids = [
+        item["call_id"]
+        for item in preflight["input"]
+        if item.get("type") in {"function_call", "function_call_output"}
+    ]
+
+    assert call_ids == ["call_short123", "call_short123"]
 
 
 def test_preflight_codex_api_kwargs_rejects_function_call_output_without_call_id(monkeypatch):

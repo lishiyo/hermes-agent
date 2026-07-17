@@ -161,6 +161,69 @@ def _make_runner(session_db=None):
     return runner
 
 
+def _make_sending_adapter():
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = TelegramAdapter(
+        PlatformConfig(enabled=True, token="telegram-token", extra={})
+    )
+    adapter._bot = SimpleNamespace(
+        send_message=AsyncMock(return_value=SimpleNamespace(message_id=123))
+    )
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_send_splits_compact_chat_target_into_parent_and_topic():
+    adapter = _make_sending_adapter()
+
+    result = await adapter.send(
+        "-1003948820617:89",
+        "hello",
+        metadata={"notify": True},
+    )
+
+    assert result.success is True
+    kwargs = adapter._bot.send_message.await_args.kwargs
+    assert kwargs["chat_id"] == -1003948820617
+    assert kwargs["message_thread_id"] == 89
+
+
+@pytest.mark.asyncio
+async def test_send_explicit_metadata_topic_overrides_compact_suffix():
+    adapter = _make_sending_adapter()
+
+    result = await adapter.send(
+        "-1003948820617:89",
+        "hello",
+        metadata={"thread_id": "42", "notify": True},
+    )
+
+    assert result.success is True
+    kwargs = adapter._bot.send_message.await_args.kwargs
+    assert kwargs["chat_id"] == -1003948820617
+    assert kwargs["message_thread_id"] == 42
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target", "expected_chat_id"),
+    [
+        ("-1003948820617", -1003948820617),
+        ("@gurren_updates", "@gurren_updates"),
+    ],
+)
+async def test_send_plain_chat_targets_remain_unchanged(target, expected_chat_id):
+    adapter = _make_sending_adapter()
+
+    result = await adapter.send(target, "hello", metadata={"notify": True})
+
+    assert result.success is True
+    kwargs = adapter._bot.send_message.await_args.kwargs
+    assert kwargs["chat_id"] == expected_chat_id
+    assert kwargs["message_thread_id"] is None
+
+
 @pytest.mark.asyncio
 async def test_root_telegram_dm_prompt_is_system_lobby_when_topic_mode_enabled(monkeypatch):
     import gateway.run as gateway_run

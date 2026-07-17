@@ -206,6 +206,23 @@ async def test_send_explicit_metadata_topic_overrides_compact_suffix():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("metadata_key", ["thread_id", "message_thread_id"])
+async def test_send_explicit_zero_topic_overrides_compact_suffix(metadata_key):
+    adapter = _make_sending_adapter()
+
+    result = await adapter.send(
+        "-1003948820617:89",
+        "hello",
+        metadata={metadata_key: 0, "notify": True},
+    )
+
+    assert result.success is True
+    kwargs = adapter._bot.send_message.await_args.kwargs
+    assert kwargs["chat_id"] == -1003948820617
+    assert kwargs["message_thread_id"] == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("target", "expected_chat_id"),
     [

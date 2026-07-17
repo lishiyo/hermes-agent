@@ -2090,10 +2090,11 @@ class MCPServerTask:
 
         The cadence is ``keepalive_interval`` from server config (default
         :data:`_DEFAULT_KEEPALIVE_INTERVAL`, floored at
-        :data:`_MIN_KEEPALIVE_INTERVAL`). Servers that GC idle sessions on a
-        short TTL (e.g. Unreal Engine's editor MCP, ~15s) need an interval
-        below that TTL, otherwise every idle tool call lands on an
-        already-expired session and pays the full reconnect path.
+        :data:`_MIN_KEEPALIVE_INTERVAL`). Set ``keepalive: false`` to disable
+        probes for a server. Servers that GC idle sessions on a short TTL
+        (e.g. Unreal Engine's editor MCP, ~15s) need an interval below that
+        TTL, otherwise every idle tool call lands on an already-expired
+        session and pays the full reconnect path.
         """
         # Refresh faster than the server's session TTL. ``ping`` (MCP base
         # protocol liveness) is used rather than ``list_tools`` so the probe
@@ -2101,10 +2102,17 @@ class MCPServerTask:
         # a ``list_tools`` keepalive against an 830-tool server would pull
         # ~1 MB every cycle. Tool-list changes still arrive out-of-band via
         # ``notifications/tools/list_changed`` → ``_refresh_tools``.
-        keepalive_interval = max(
-            _MIN_KEEPALIVE_INTERVAL,
-            float(self._config.get("keepalive_interval", _DEFAULT_KEEPALIVE_INTERVAL)),
-        )
+        keepalive_enabled = self._config.get("keepalive", True) is not False
+        keepalive_interval = None
+        if keepalive_enabled:
+            keepalive_interval = max(
+                _MIN_KEEPALIVE_INTERVAL,
+                float(
+                    self._config.get(
+                        "keepalive_interval", _DEFAULT_KEEPALIVE_INTERVAL
+                    )
+                ),
+            )
 
         shutdown_task = asyncio.create_task(self._shutdown_event.wait())
         reconnect_task = asyncio.create_task(self._reconnect_event.wait())
@@ -2118,7 +2126,12 @@ class MCPServerTask:
                 timeout = keepalive_interval
                 recycle_deadline = self._next_stdio_recycle_deadline()
                 if recycle_deadline is not None:
-                    timeout = max(0.0, min(timeout, recycle_deadline - time.monotonic()))
+                    recycle_timeout = max(0.0, recycle_deadline - time.monotonic())
+                    timeout = (
+                        recycle_timeout
+                        if timeout is None
+                        else min(timeout, recycle_timeout)
+                    )
 
                 done, _pending = await asyncio.wait(
                     {shutdown_task, reconnect_task},
@@ -2133,6 +2146,9 @@ class MCPServerTask:
                     self._mark_stdio_recycled(recycle_reason)
                     return "recycle"
 
+                if not keepalive_enabled:
+                    continue
+
                 # Timeout — no lifecycle event fired.  Probe the connection
                 # to detect stale/expired sessions. Prefer ``ping`` (MCP base
                 # protocol liveness): it works uniformly and stays a few bytes
@@ -2143,7 +2159,13 @@ class MCPServerTask:
                 # for the rest of this connection rather than reconnect-looping.
                 if self.session:
                     try:
-                        await self._keepalive_probe()
+                        async with self._rpc_lock:
+                            if (
+                                self._shutdown_event.is_set()
+                                or self._reconnect_event.is_set()
+                            ):
+                                continue
+                            await self._keepalive_probe()
                     except Exception as exc:
                         logger.warning(
                             "MCP server '%s' keepalive failed, "
@@ -3392,15 +3414,18 @@ def _is_auth_error(exc: BaseException) -> bool:
     generic error path in the tool handlers.
     """
     types = _get_auth_error_types()
-    if not types or not isinstance(exc, types):
-        return False
-    try:
-        import httpx
-        if isinstance(exc, httpx.HTTPStatusError):
-            return getattr(exc.response, "status_code", None) == 401
-    except ImportError:
-        pass
-    return True
+    if types and isinstance(exc, types):
+        try:
+            import httpx
+            if isinstance(exc, httpx.HTTPStatusError):
+                return getattr(exc.response, "status_code", None) == 401
+        except ImportError:
+            pass
+        return True
+
+    if isinstance(exc, BaseExceptionGroup):
+        return any(_is_auth_error(child) for child in exc.exceptions)
+    return False
 
 
 def _handle_auth_error_and_retry(

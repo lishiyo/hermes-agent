@@ -30,6 +30,24 @@ def test_is_auth_error_detects_oauth_non_interactive():
     assert _is_auth_error(OAuthNonInteractiveError("no browser")) is True
 
 
+def test_is_auth_error_detects_nested_oauth_non_interactive():
+    """AnyIO task groups can wrap OAuth failures in an ExceptionGroup."""
+    from tools.mcp_tool import _is_auth_error
+    from tools.mcp_oauth import OAuthNonInteractiveError
+
+    exc = ExceptionGroup(
+        "outer TaskGroup",
+        [
+            RuntimeError("sibling failure"),
+            ExceptionGroup(
+                "inner TaskGroup",
+                [OAuthNonInteractiveError("no browser")],
+            ),
+        ],
+    )
+    assert _is_auth_error(exc) is True
+
+
 def test_is_auth_error_detects_httpx_401():
     from tools.mcp_tool import _is_auth_error
     import httpx

@@ -2131,6 +2131,50 @@ class TestReconnection:
 
         asyncio.run(_test())
 
+    def test_initial_wrapped_oauth_failure_does_not_retry(self):
+        """A TaskGroup-wrapped OAuth failure is still non-retryable."""
+        from tools.mcp_oauth import OAuthNonInteractiveError
+        from tools.mcp_tool import MCPServerTask
+
+        run_count = 0
+        target_server = None
+        oauth_error = ExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [OAuthNonInteractiveError("no browser")],
+        )
+
+        original_run_stdio = MCPServerTask._run_stdio
+
+        async def patched_run_stdio(self_srv, config):
+            nonlocal run_count, target_server
+            run_count += 1
+            if target_server is not self_srv:
+                return await original_run_stdio(self_srv, config)
+            raise oauth_error
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("oauth_srv")
+            target_server = server
+
+            with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
+                 patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                task = asyncio.create_task(server.run({"command": "test"}))
+                await server._ready.wait()
+                attempts = run_count
+                sleep_count = mock_sleep.await_count
+
+                if not task.done():
+                    server._shutdown_event.set()
+                    server._reconnect_event.set()
+                    await asyncio.wait_for(task, timeout=5)
+
+            assert attempts == 1
+            assert server._error is oauth_error
+            assert sleep_count == 0
+
+        asyncio.run(_test())
+
     def test_preflight_probe_runs_on_initial_http_connect(self):
         """The content-type preflight probe fires on the first HTTP connect."""
         from tools.mcp_tool import MCPServerTask

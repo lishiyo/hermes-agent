@@ -191,6 +191,26 @@ def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
     return f"call_{digest}"
 
 
+def _normalize_responses_call_id(
+    call_id: Any,
+    *,
+    fn_name: str = "",
+    arguments: str = "{}",
+    index: int = 0,
+) -> str:
+    """Return a stable Responses call_id within the API's 64-char limit."""
+    if isinstance(call_id, str):
+        value = call_id.strip()
+        if value:
+            if len(value) <= 64:
+                return value
+            digest = hashlib.sha256(
+                value.encode("utf-8", errors="replace")
+            ).hexdigest()[:24]
+            return f"call_{digest}"
+    return _deterministic_call_id(fn_name, arguments, index)
+
+
 def _split_responses_tool_id(raw_id: Any) -> tuple[Optional[str], Optional[str]]:
     """Split a stored tool id into (call_id, response_item_id)."""
     if not isinstance(raw_id, str):
@@ -543,6 +563,12 @@ def _chat_messages_to_responses_input(
                         elif not isinstance(arguments, str):
                             arguments = str(arguments)
                         arguments = arguments.strip() or "{}"
+                        call_id = _normalize_responses_call_id(
+                            call_id,
+                            fn_name=fn_name,
+                            arguments=arguments,
+                            index=len(items),
+                        )
 
                         items.append({
                             "type": "function_call",
@@ -568,6 +594,7 @@ def _chat_messages_to_responses_input(
                     call_id = raw_tool_call_id.strip()
             if not isinstance(call_id, str) or not call_id.strip():
                 continue
+            call_id = _normalize_responses_call_id(call_id)
 
             # Multimodal tool result: convert OpenAI-style content list into
             # Responses ``function_call_output.output`` array. The Responses
@@ -629,6 +656,12 @@ def _preflight_codex_input_items(
             elif not isinstance(arguments, str):
                 arguments = str(arguments)
             arguments = arguments.strip() or "{}"
+            call_id = _normalize_responses_call_id(
+                call_id,
+                fn_name=name,
+                arguments=arguments,
+                index=idx,
+            )
 
             normalized.append(
                 {
@@ -644,6 +677,7 @@ def _preflight_codex_input_items(
             call_id = item.get("call_id")
             if not isinstance(call_id, str) or not call_id.strip():
                 raise ValueError(f"Codex Responses input[{idx}] function_call_output is missing call_id.")
+            call_id = _normalize_responses_call_id(call_id, index=idx)
             output = item.get("output", "")
             if output is None:
                 output = ""

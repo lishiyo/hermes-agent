@@ -1045,6 +1045,8 @@ def _get_home_target_chat_id(platform_name: str) -> str:
         legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
         if legacy:
             value = os.getenv(legacy, "")
+    if platform_name.lower() == "telegram" and ":" in value:
+        return value.partition(":")[0]
     return value
 
 
@@ -1053,8 +1055,9 @@ def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
 
     Telegram-only override: ``TELEGRAM_CRON_THREAD_ID`` takes precedence over
     ``TELEGRAM_HOME_CHANNEL_THREAD_ID`` for cron delivery. When topic mode is
-    enabled, deliveries that land in the root DM (thread_id unset) end up in
-    the system-only lobby where the user cannot reply — the gateway returns
+    enabled, a compact ``TELEGRAM_HOME_CHANNEL=chat_id:thread_id`` suffix is
+    the final fallback. Without a thread ID, deliveries land in the system-only
+    lobby where the user cannot reply — the gateway returns
     the lobby reminder and drops ``reply_to_message_id`` (#24409). Pointing
     cron at a dedicated topic via this env var lets replies work as expected
     without changing the lobby invariant.
@@ -1071,7 +1074,18 @@ def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
         legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
         if legacy:
             value = os.getenv(f"{legacy}_THREAD_ID", "").strip()
-    return value or None
+    if value:
+        return value
+    if platform_name.lower() == "telegram":
+        home_value = os.getenv(env_var, "")
+        if not home_value:
+            legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
+            if legacy:
+                home_value = os.getenv(legacy, "")
+        _, separator, embedded_thread = home_value.partition(":")
+        if separator:
+            return embedded_thread.strip() or None
+    return None
 
 
 def _iter_home_target_platforms():

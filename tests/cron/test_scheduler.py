@@ -217,6 +217,55 @@ class TestResolveDeliveryTarget:
             "thread_id": "topic-7",
         }
 
+    def test_compact_home_target_resolves_parent_chat_and_topic(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-1003948820617:89")
+        monkeypatch.delenv("TELEGRAM_CRON_THREAD_ID", raising=False)
+        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL_THREAD_ID", raising=False)
+
+        assert _resolve_delivery_target({"deliver": "telegram"}) == {
+            "platform": "telegram",
+            "chat_id": "-1003948820617",
+            "thread_id": "89",
+        }
+
+    def test_origin_fallback_preserves_compact_home_topic(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-1003948820617:89")
+        monkeypatch.delenv("TELEGRAM_CRON_THREAD_ID", raising=False)
+        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL_THREAD_ID", raising=False)
+
+        assert _resolve_delivery_target({"deliver": "origin"}) == {
+            "platform": "telegram",
+            "chat_id": "-1003948820617",
+            "thread_id": "89",
+        }
+
+    @pytest.mark.parametrize(
+        ("cron_thread", "home_thread", "expected_thread"),
+        [
+            ("42", "5", "42"),
+            (None, "5", "5"),
+            (None, None, "89"),
+        ],
+    )
+    def test_compact_home_topic_respects_thread_precedence(
+        self, monkeypatch, cron_thread, home_thread, expected_thread
+    ):
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-1003948820617:89")
+        if cron_thread is None:
+            monkeypatch.delenv("TELEGRAM_CRON_THREAD_ID", raising=False)
+        else:
+            monkeypatch.setenv("TELEGRAM_CRON_THREAD_ID", cron_thread)
+        if home_thread is None:
+            monkeypatch.delenv("TELEGRAM_HOME_CHANNEL_THREAD_ID", raising=False)
+        else:
+            monkeypatch.setenv("TELEGRAM_HOME_CHANNEL_THREAD_ID", home_thread)
+
+        assert _resolve_delivery_target({"deliver": "telegram"}) == {
+            "platform": "telegram",
+            "chat_id": "-1003948820617",
+            "thread_id": expected_thread,
+        }
+
     def test_telegram_cron_thread_id_overrides_home_thread_id(self, monkeypatch):
         """TELEGRAM_CRON_THREAD_ID wins over TELEGRAM_HOME_CHANNEL_THREAD_ID for cron (#24409)."""
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-1001234567890")
@@ -4165,7 +4214,7 @@ class TestCronDeliveryTargets:
         )
 
     def test_lists_configured_platforms_flagging_missing_home_channel(self, monkeypatch):
-        from cron.scheduler import cron_delivery_targets
+        from cron.scheduler import cron_delivery_targets, _get_home_target_chat_id
 
         self._patch_connected(monkeypatch, ["matrix", "telegram"])
         monkeypatch.delenv("MATRIX_HOME_ROOM", raising=False)
@@ -4178,6 +4227,8 @@ class TestCronDeliveryTargets:
         assert targets["matrix"]["home_target_set"] is False
         assert targets["matrix"]["home_env_var"] == "MATRIX_HOME_ROOM"
         assert targets["telegram"]["home_target_set"] is False
+        assert _get_home_target_chat_id("telegram") == ""
+        assert isinstance(_get_home_target_chat_id("telegram"), str)
 
     def test_home_channel_set_marks_target_ready(self, monkeypatch):
         from cron.scheduler import cron_delivery_targets

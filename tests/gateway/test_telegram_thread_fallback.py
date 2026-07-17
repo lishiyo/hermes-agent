@@ -1198,6 +1198,99 @@ async def test_slash_confirm_forum_callback_followup_keeps_existing_thread_behav
 
 
 @pytest.mark.asyncio
+async def test_slash_confirm_result_parse_error_retries_once_as_clean_plain_text(
+    monkeypatch,
+):
+    adapter = _make_adapter()
+    adapter._slash_confirm_state = {"confirm-1": "session-1"}
+    adapter._is_callback_user_authorized = lambda *args, **kwargs: True
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if len(call_log) == 1:
+            raise FakeBadRequest("Can't parse entities: malformed markdown")
+        return SimpleNamespace(message_id=9001)
+
+    async def resolve(_session_key, _confirm_id, _choice):
+        return "Approved **command** with file_name.txt!"
+
+    from tools import slash_confirm
+
+    monkeypatch.setattr(slash_confirm, "resolve", resolve)
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    class Query:
+        data = "sc:once:confirm-1"
+        from_user = SimpleNamespace(id=42, first_name="Alice")
+        message = SimpleNamespace(
+            chat_id=-100123,
+            chat=SimpleNamespace(type=_fake_telegram_constants.ChatType.SUPERGROUP),
+            message_thread_id=20197,
+            message_id=462,
+        )
+
+        async def answer(self, **kwargs):
+            return None
+
+        async def edit_message_text(self, **kwargs):
+            return None
+
+    await adapter._handle_callback_query(
+        SimpleNamespace(callback_query=Query()), SimpleNamespace()
+    )
+
+    assert len(call_log) == 2
+    assert call_log[0]["parse_mode"] == _fake_telegram_constants.ParseMode.MARKDOWN_V2
+    assert call_log[1]["parse_mode"] is None
+    assert call_log[1]["text"] == "Approved command with file_name.txt!"
+    assert "\\" not in call_log[1]["text"]
+    assert call_log[1]["message_thread_id"] == 20197
+
+
+@pytest.mark.asyncio
+async def test_slash_confirm_result_non_parse_error_does_not_retry(monkeypatch):
+    adapter = _make_adapter()
+    adapter._slash_confirm_state = {"confirm-1": "session-1"}
+    adapter._is_callback_user_authorized = lambda *args, **kwargs: True
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        raise FakeBadRequest("chat not found")
+
+    async def resolve(_session_key, _confirm_id, _choice):
+        return "done"
+
+    from tools import slash_confirm
+
+    monkeypatch.setattr(slash_confirm, "resolve", resolve)
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    class Query:
+        data = "sc:once:confirm-1"
+        from_user = SimpleNamespace(id=42, first_name="Alice")
+        message = SimpleNamespace(
+            chat_id=-100123,
+            chat=SimpleNamespace(type=_fake_telegram_constants.ChatType.SUPERGROUP),
+            message_thread_id=20197,
+            message_id=462,
+        )
+
+        async def answer(self, **kwargs):
+            return None
+
+        async def edit_message_text(self, **kwargs):
+            return None
+
+    await adapter._handle_callback_query(
+        SimpleNamespace(callback_query=Query()), SimpleNamespace()
+    )
+
+    assert len(call_log) == 1
+
+
+@pytest.mark.asyncio
 async def test_base_send_image_fallback_preserves_metadata():
     """Base image fallback should pass metadata through instead of referencing kwargs."""
     from gateway.platforms.base import BasePlatformAdapter

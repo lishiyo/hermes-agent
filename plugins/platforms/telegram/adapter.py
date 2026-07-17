@@ -1068,6 +1068,22 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id = metadata.get("thread_id") or metadata.get("message_thread_id")
         return str(thread_id) if thread_id is not None else None
 
+    @staticmethod
+    def _split_compact_chat_target(
+        chat_id: str,
+        thread_id: Optional[str],
+    ) -> tuple[str, Optional[str]]:
+        """Split a numeric ``chat_id:thread_id`` target without overriding metadata."""
+        chat_id_str = str(chat_id)
+        parent_chat_id, separator, compact_thread_id = chat_id_str.rpartition(":")
+        if not (
+            separator
+            and parent_chat_id.lstrip("-").isdigit()
+            and compact_thread_id.isdigit()
+        ):
+            return chat_id_str, thread_id
+        return parent_chat_id, thread_id or compact_thread_id
+
     @classmethod
     def _metadata_direct_messages_topic_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
         if not metadata:
@@ -1241,6 +1257,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return isinstance(error, BadRequest)
         except ImportError:
             return False
+
+    @classmethod
+    def _is_markdown_parse_error(cls, error: Exception) -> bool:
+        if not cls._is_bad_request_error(error):
+            return False
+        message = str(error).lower()
+        return any(token in message for token in ("parse", "markdown", "entity"))
 
     @classmethod
     def _should_retry_without_dm_topic_reply_anchor(
@@ -4017,6 +4040,15 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+
+        metadata_thread_id = self._metadata_thread_id(metadata)
+        chat_id, target_thread_id = self._split_compact_chat_target(
+            chat_id,
+            metadata_thread_id,
+        )
+        if target_thread_id is not None and metadata_thread_id is None:
+            metadata = dict(metadata or {})
+            metadata["thread_id"] = target_thread_id
         
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
@@ -6084,7 +6116,15 @@ class TelegramAdapter(BasePlatformAdapter):
                                     reply_to_mode=self._reply_to_mode
                                 )
                             )
-                        await self._send_message_with_thread_fallback(**send_kwargs)
+                        try:
+                            await self._send_message_with_thread_fallback(**send_kwargs)
+                        except Exception as send_error:
+                            if not self._is_markdown_parse_error(send_error):
+                                raise
+                            plain_send_kwargs = dict(send_kwargs)
+                            plain_send_kwargs["text"] = _strip_mdv2(send_kwargs["text"])
+                            plain_send_kwargs["parse_mode"] = None
+                            await self._send_message_with_thread_fallback(**plain_send_kwargs)
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
             return

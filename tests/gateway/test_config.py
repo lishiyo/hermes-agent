@@ -1924,6 +1924,68 @@ class TestHomeChannelEnvOverrides:
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
 
+    def test_compact_telegram_home_channel_sets_parent_chat_and_topic(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="telegram-token")
+            }
+        )
+
+        with patch.dict(
+            os.environ,
+            {"TELEGRAM_HOME_CHANNEL": "-1003948820617:89"},
+            clear=True,
+        ):
+            _apply_env_overrides(config)
+
+        home = config.platforms[Platform.TELEGRAM].home_channel
+        assert home is not None
+        assert home.chat_id == "-1003948820617"
+        assert home.thread_id == "89"
+
+    def test_explicit_telegram_home_thread_overrides_compact_suffix(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="telegram-token")
+            }
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "TELEGRAM_HOME_CHANNEL": "-1003948820617:89",
+                "TELEGRAM_HOME_CHANNEL_THREAD_ID": "42",
+            },
+            clear=True,
+        ):
+            _apply_env_overrides(config)
+
+        home = config.platforms[Platform.TELEGRAM].home_channel
+        assert home is not None
+        assert home.chat_id == "-1003948820617"
+        assert home.thread_id == "42"
+
+    def test_plain_telegram_home_targets_remain_unchanged(self):
+        for target in ("-1003948820617", "@gurren_updates"):
+            config = GatewayConfig(
+                platforms={
+                    Platform.TELEGRAM: PlatformConfig(
+                        enabled=True, token="telegram-token"
+                    )
+                }
+            )
+            with patch.dict(
+                os.environ,
+                {"TELEGRAM_HOME_CHANNEL": target},
+                clear=True,
+            ):
+                _apply_env_overrides(config)
+
+            home = config.platforms[Platform.TELEGRAM].home_channel
+            assert home is not None
+            assert home.chat_id == target
+            assert home.thread_id is None
+
 
 class TestMultiplexProfilesEnvOverride:
     """GATEWAY_MULTIPLEX_PROFILES env override — the 3-tier precedence chain.

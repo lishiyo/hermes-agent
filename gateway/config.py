@@ -1740,11 +1740,22 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
 
     telegram_home = getenv("TELEGRAM_HOME_CHANNEL")
     if telegram_home and Platform.TELEGRAM in config.platforms:
+        telegram_chat_id = telegram_home
+        compact_chat_id, separator, compact_thread_id = telegram_home.rpartition(":")
+        if (
+            separator
+            and compact_chat_id.lstrip("-").isdigit()
+            and compact_thread_id.isdigit()
+        ):
+            telegram_chat_id = compact_chat_id
         config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
             platform=Platform.TELEGRAM,
-            chat_id=telegram_home,
+            chat_id=telegram_chat_id,
             name=getenv("TELEGRAM_HOME_CHANNEL_NAME", "Home"),
-            thread_id=getenv("TELEGRAM_HOME_CHANNEL_THREAD_ID") or None,
+            thread_id=(
+                getenv("TELEGRAM_HOME_CHANNEL_THREAD_ID")
+                or (compact_thread_id if telegram_chat_id != telegram_home else None)
+            ),
         )
     
     # Discord

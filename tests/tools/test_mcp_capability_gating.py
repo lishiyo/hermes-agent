@@ -181,6 +181,39 @@ class TestKeepaliveProbe:
         task.session.send_ping.assert_awaited_once()
         task.session.list_tools.assert_not_called()
 
+    async def test_keepalive_false_skips_probe(self):
+        """An explicit per-server opt-out must suppress keepalive RPCs."""
+        task = MCPServerTask("test")
+        task._config = {"keepalive": False}
+        task.session = SimpleNamespace(
+            list_tools=AsyncMock(),
+            send_ping=AsyncMock(),
+        )
+
+        reason = await self._run_one_keepalive_cycle(task)
+
+        assert reason == "shutdown"
+        task.session.send_ping.assert_not_called()
+        task.session.list_tools.assert_not_called()
+
+    async def test_keepalive_probe_is_serialized_with_normal_rpcs(self):
+        """The lifecycle probe must share the task's existing RPC lock."""
+        task = MCPServerTask("test")
+        lock_states = []
+
+        async def record_lock_state():
+            lock_states.append(task._rpc_lock.locked())
+
+        task.session = SimpleNamespace(
+            list_tools=AsyncMock(),
+            send_ping=AsyncMock(side_effect=record_lock_state),
+        )
+
+        reason = await self._run_one_keepalive_cycle(task)
+
+        assert reason == "shutdown"
+        assert lock_states == [True]
+
 
 class TestKeepaliveInterval:
     """The keepalive cadence is configurable so servers with short session
@@ -229,6 +262,10 @@ class TestKeepaliveInterval:
             await self._captured_interval({"keepalive_interval": 0.1})
             == _MIN_KEEPALIVE_INTERVAL
         )
+
+    @pytest.mark.asyncio
+    async def test_explicit_disable_has_no_keepalive_timeout(self):
+        assert await self._captured_interval({"keepalive": False}) is None
 
 
 def _mcp_error(code, message="boom"):
@@ -376,5 +413,4 @@ class TestKeepaliveProbeFallback:
         await task._discover_tools()
 
         assert task._ping_unsupported is False
-
 

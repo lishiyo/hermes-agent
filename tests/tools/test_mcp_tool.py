@@ -1325,6 +1325,61 @@ class TestMCPServerTask:
 
         asyncio.run(_test())
 
+    def test_keepalive_disabled_recycles_after_active_rpc_becomes_idle(self):
+        """An expired recycle deadline must wake when the RPC lock is released."""
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            server = MCPServerTask("srv")
+            server._config = {"command": "npx", "keepalive": False}
+            session = SimpleNamespace(
+                send_ping=AsyncMock(),
+                list_tools=AsyncMock(),
+            )
+            server.session = session
+            server._idle_timeout_seconds = 0.01
+            server._last_tool_call_at = time.monotonic() - 1.0
+
+            real_wait = asyncio.wait
+            wait_count = 0
+
+            async def counting_wait(*args, **kwargs):
+                nonlocal wait_count
+                wait_count += 1
+                return await real_wait(*args, **kwargs)
+
+            await server._rpc_lock.acquire()
+            try:
+                with patch("tools.mcp_tool.asyncio.wait", counting_wait):
+                    lifecycle_task = asyncio.create_task(
+                        server._wait_for_lifecycle_event()
+                    )
+                    await asyncio.sleep(0)
+                    server._rpc_lock.release()
+
+                    try:
+                        reason = await asyncio.wait_for(
+                            asyncio.shield(lifecycle_task), timeout=0.25
+                        )
+                        completed_without_external_signal = True
+                    except asyncio.TimeoutError:
+                        completed_without_external_signal = False
+                        server._shutdown_event.set()
+                        reason = await lifecycle_task
+            finally:
+                if server._rpc_lock.locked():
+                    server._rpc_lock.release()
+
+            assert completed_without_external_signal is True
+            assert reason == "recycle"
+            assert wait_count == 1
+            assert server._recycled_reason == "idle_timeout_seconds"
+            assert server.session is None
+            session.send_ping.assert_not_called()
+            session.list_tools.assert_not_called()
+
+        asyncio.run(_test())
+
     def test_stdio_recycle_reason_uses_max_lifetime(self):
         from tools.mcp_tool import MCPServerTask
 

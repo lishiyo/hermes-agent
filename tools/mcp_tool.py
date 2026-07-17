@@ -2114,8 +2114,15 @@ class MCPServerTask:
                 ),
             )
 
+        async def wait_for_rpc_idle() -> None:
+            # Joining the lock queue gives recycle-only waits an event-driven
+            # wakeup without polling or competing with an in-flight RPC.
+            async with self._rpc_lock:
+                pass
+
         shutdown_task = asyncio.create_task(self._shutdown_event.wait())
         reconnect_task = asyncio.create_task(self._reconnect_event.wait())
+        rpc_idle_task = None
         try:
             while True:
                 recycle_reason = self._stdio_recycle_reason()
@@ -2133,13 +2140,33 @@ class MCPServerTask:
                         else min(timeout, recycle_timeout)
                     )
 
+                if (
+                    recycle_deadline is None
+                    and not self._is_http()
+                    and self._rpc_lock.locked()
+                    and (
+                        self._idle_timeout_seconds is not None
+                        or self._max_lifetime_seconds is not None
+                    )
+                    and rpc_idle_task is None
+                ):
+                    rpc_idle_task = asyncio.create_task(wait_for_rpc_idle())
+
+                wait_tasks = {shutdown_task, reconnect_task}
+                if rpc_idle_task is not None:
+                    wait_tasks.add(rpc_idle_task)
+
                 done, _pending = await asyncio.wait(
-                    {shutdown_task, reconnect_task},
+                    wait_tasks,
                     timeout=timeout,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
-                if done:
+                if shutdown_task in done or reconnect_task in done:
                     break
+                if rpc_idle_task is not None and rpc_idle_task in done:
+                    await rpc_idle_task
+                    rpc_idle_task = None
+                    continue
 
                 recycle_reason = self._stdio_recycle_reason()
                 if recycle_reason is not None:
@@ -2175,8 +2202,8 @@ class MCPServerTask:
                         self._reconnect_event.set()
                         break
         finally:
-            for t in (shutdown_task, reconnect_task):
-                if not t.done():
+            for t in (shutdown_task, reconnect_task, rpc_idle_task):
+                if t is not None and not t.done():
                     t.cancel()
                     try:
                         await t

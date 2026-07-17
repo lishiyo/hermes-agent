@@ -563,6 +563,51 @@ class TestResolveJobRef:
 
 
 class TestMarkJobRun:
+    def test_success_records_last_success_at_with_last_run_at(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        job = create_job(prompt="Test", schedule="every 1h")
+        run_at = datetime(2026, 7, 17, 20, 15, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: run_at)
+
+        mark_job_run(job["id"], success=True)
+
+        updated = get_job(job["id"])
+        assert updated["last_run_at"] == run_at.isoformat()
+        assert updated["last_success_at"] == updated["last_run_at"]
+
+    def test_failure_preserves_previous_last_success_at(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        job = create_job(prompt="Test", schedule="every 1h")
+        previous_success = "2026-07-17T16:00:00+00:00"
+        update_job(job["id"], {"last_success_at": previous_success})
+        failed_at = datetime(2026, 7, 17, 20, 30, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: failed_at)
+
+        mark_job_run(job["id"], success=False, error="timeout")
+
+        updated = get_job(job["id"])
+        assert updated["last_run_at"] == failed_at.isoformat()
+        assert updated["last_success_at"] == previous_success
+
+    def test_success_with_delivery_error_still_records_last_success_at(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        job = create_job(prompt="Report", schedule="every 1h")
+        run_at = datetime(2026, 7, 17, 20, 45, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: run_at)
+
+        mark_job_run(
+            job["id"],
+            success=True,
+            delivery_error="platform 'telegram' not configured",
+        )
+
+        updated = get_job(job["id"])
+        assert updated["last_success_at"] == updated["last_run_at"]
+        assert updated["last_delivery_error"] == "platform 'telegram' not configured"
+
     def test_increments_completed(self, tmp_cron_dir):
         job = create_job(prompt="Test", schedule="every 1h")
         mark_job_run(job["id"], success=True)

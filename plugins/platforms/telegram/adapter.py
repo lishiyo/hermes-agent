@@ -1065,7 +1065,9 @@ class TelegramAdapter(BasePlatformAdapter):
     def _metadata_thread_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
         if not metadata:
             return None
-        thread_id = metadata.get("thread_id") or metadata.get("message_thread_id")
+        thread_id = metadata.get("thread_id")
+        if thread_id is None:
+            thread_id = metadata.get("message_thread_id")
         return str(thread_id) if thread_id is not None else None
 
     @staticmethod
@@ -1082,7 +1084,10 @@ class TelegramAdapter(BasePlatformAdapter):
             and compact_thread_id.isdigit()
         ):
             return chat_id_str, thread_id
-        return parent_chat_id, thread_id or compact_thread_id
+        return (
+            parent_chat_id,
+            thread_id if thread_id is not None else compact_thread_id,
+        )
 
     @classmethod
     def _metadata_direct_messages_topic_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:

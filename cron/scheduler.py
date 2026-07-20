@@ -2962,6 +2962,7 @@ def run_job(
         platform="",
         chat_id="",
         chat_name="",
+        async_delivery=False,
     )
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",
